@@ -484,7 +484,7 @@ class MegatronPPOActor(BasePPOActor):
             # Set global_batch_info for loss aggregation
             self.config.global_batch_info["num_microbatches"] = n_micro_batch
             self.config.global_batch_info["total_micro_batch_size"] = total_micro_batch_size
-            
+
             # For memory efficiency
             # We move calculation of entropy to compute_log_probs, forward_only == True
             log_probs = None
@@ -562,7 +562,12 @@ class MegatronPPOActor(BasePPOActor):
             if calculate_entropy:
                 entropy = output["entropy"][:, -response_length - 1 : -1].contiguous()
                 if not forward_only:
-                    entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, **self.config.global_batch_info)
+                    entropy_loss = agg_loss(
+                        loss_mat=entropy,
+                        loss_mask=response_mask,
+                        loss_agg_mode=loss_agg_mode,
+                        **self.config.global_batch_info,
+                    )
                     entropy_coeff = meta_info["entropy_coeff"]
                     policy_loss = pg_loss - entropy_coeff * entropy_loss
                 else:
@@ -575,7 +580,12 @@ class MegatronPPOActor(BasePPOActor):
                     ref_log_prob = data["ref_log_prob"]
                     # compute kl loss
                     kld = kl_penalty(logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type)
-                    kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=self.config.loss_agg_mode, **self.config.global_batch_info)
+                    kl_loss = agg_loss(
+                        loss_mat=kld,
+                        loss_mask=response_mask,
+                        loss_agg_mode=self.config.loss_agg_mode,
+                        **self.config.global_batch_info,
+                    )
 
                     policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                     metrics["actor/kl_loss"] = kl_loss.detach().item()
