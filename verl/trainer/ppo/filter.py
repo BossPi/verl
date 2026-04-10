@@ -21,13 +21,13 @@ def ErnieXRewardFilterV2(
 ) -> DataProto:
     """
     根据 reward 的错误率和方差标记数据组是否 rejected。
-    
+
     Args:
         batch: 输入的 DataProto
         max_error_rate: 允许的最大错误率
         min_variance: 非错误 reward 的最小方差阈值
         error_reward_threshold: 低于此值视为错误 reward
-    
+
     Returns:
         DataProto: 添加了 rejected 标记的 batch
     """
@@ -35,15 +35,21 @@ def ErnieXRewardFilterV2(
     rewards = batch.batch["rm_scores"].sum(dim=-1).cpu().numpy()
     uids = batch.non_tensor_batch["uid"]
     bsz = len(uids)
-    
+
+    print(f"[ErnieXRewardFilterV2] ========== Start filtering ==========")
+    print(f"[ErnieXRewardFilterV2] Config: max_error_rate={max_error_rate}, min_variance={min_variance}, error_reward_threshold={error_reward_threshold}")
+    print(f"[ErnieXRewardFilterV2] Batch size: {bsz}")
+
     # 初始化 rejected 数组
     rejected = np.zeros(bsz, dtype=bool)
-    
+
     # 按 uid 分组
     uid_to_indices = defaultdict(list)
     for idx, uid in enumerate(uids):
         uid_to_indices[str(uid)].append(idx)
-    
+
+    print(f"[ErnieXRewardFilterV2] Number of groups: {len(uid_to_indices)}")
+
     for uid, indices in uid_to_indices.items():
         group_rewards = rewards[indices]
 
@@ -51,23 +57,39 @@ def ErnieXRewardFilterV2(
         error_mask = np.abs(group_rewards - error_reward_threshold) < 1e-3
         error_cnt = error_mask.sum()
         error_rate = error_cnt / len(indices)
-        
+
+        print(f"[ErnieXRewardFilterV2] Group {uid} ({len(indices)} samples): rewards={group_rewards}")
+        print(f"[ErnieXRewardFilterV2]   error_mask={error_mask}, error_cnt={error_cnt}/{len(indices)}, error_rate={error_rate:.2%}")
+
         # 规则1: 错误率不能超过阈值
         if error_rate > max_error_rate:
+            print(f"[ErnieXRewardFilterV2]   REJECTED: error_rate={error_rate:.2%} > max_error_rate={max_error_rate}")
             for idx in indices:
                 rejected[idx] = True
             continue
-        
+
         # 规则2: 非错误 reward 的方差必须足够大
         not_err_rewards = group_rewards[~error_mask]
-        if np.var(not_err_rewards) < min_variance:
-            for idx in indices:
-                rejected[idx] = True
-            continue
-    
+        if len(not_err_rewards) > 0:
+            variance = np.var(not_err_rewards)
+            print(f"[ErnieXRewardFilterV2]   non-error rewards: {not_err_rewards}, variance={variance:.6f}")
+            if variance < min_variance:
+                print(f"[ErnieXRewardFilterV2]   REJECTED: variance={variance:.6f} < min_variance={min_variance}")
+                for idx in indices:
+                    rejected[idx] = True
+                continue
+        else:
+            print(f"[ErnieXRewardFilterV2]   REJECTED: no non-error samples")
+
+        print(f"[ErnieXRewardFilterV2]   Group {uid} ACCEPTED")
+
     # 将 rejected 标记添加到 batch
     batch.non_tensor_batch["rejected"] = rejected
-    
+
+    rejected_count = rejected.sum()
+    print(f"[ErnieXRewardFilterV2] ========== Summary ==========")
+    print(f"[ErnieXRewardFilterV2] Total rejected: {rejected_count}/{bsz} ({rejected_count/bsz*100:.1f}%)")
+
     return batch
 
 
@@ -100,13 +122,19 @@ def ErnieXBaseRewardProcessor(
     Returns:
         DataProto: 添加了 rejected 标记，并修复了无效样本的 batch
     """
+    print(f"[ErnieXBaseRewardProcessor] ========== Start ==========")
+    print(f"[ErnieXBaseRewardProcessor] Config: error_reward={error_reward}, accept_ratio={accept_ratio}, max_tokens={max_tokens}, overlength_reward={overlength_reward}")
+
     rewards = batch.batch["rm_scores"].sum(dim=-1).cpu().numpy()
     uids = batch.non_tensor_batch["uid"]
     bsz = len(uids)
+    print(f"[ErnieXBaseRewardProcessor] Batch size: {bsz}")
+    print(f"[ErnieXBaseRewardProcessor] Rewards: min={rewards.min():.2f}, max={rewards.max():.2f}, mean={rewards.mean():.2f}")
 
     # 读取已有的 rejected，如果没有则初始化
     if "rejected" in batch.non_tensor_batch:
         rejected = batch.non_tensor_batch["rejected"].copy()
+        print(f"[ErnieXBaseRewardProcessor] Existing rejected field found, {rejected.sum()} samples already rejected")
     else:
         rejected = np.zeros(bsz, dtype=bool)
     
@@ -209,34 +237,38 @@ def ErnieXLengthRewardProcessor(
 ) -> DataProto:
     """
     根据输出长度调整 reward。
-    
+
     惩罚公式：
     - length_threshold = max_tokens - cache_tokens
     - 如果 length > length_threshold:
         penalty = (length - length_threshold) / cache_tokens
         reward = reward - penalty
-    
+
     Args:
         batch: 输入的 DataProto
         max_tokens: 最大 token 数
         cache_tokens: 缓冲区 token 数
-    
+
     Returns:
         DataProto: 调整了 rm_scores 的 batch
     """
+    print(f"[ErnieXLengthRewardProcessor] ========== Start ==========")
+    print(f"[ErnieXLengthRewardProcessor] Config: max_tokens={max_tokens}, cache_tokens={cache_tokens}")
+
     responses = batch.batch["responses"]          # [bsz, response_len]
     response_mask = batch.batch["response_mask"]  # [bsz, response_len]
     rm_scores = batch.batch["rm_scores"]          # [bsz, response_len]
     bsz = responses.size(0)
-    
+
     length_threshold = max_tokens - cache_tokens
-    
+
     # 计算每个样本的有效长度
     lengths = response_mask.sum(dim=-1)  # [bsz]
-    
+
     # 原始 reward（用于日志）
     original_rewards = rm_scores.sum(dim=-1)
-    
+    print(f"[ErnieXLengthRewardProcessor] Lengths: min={lengths.min().item()}, max={lengths.max().item()}, mean={lengths.float().mean().item():.1f}")
+
     # 计算惩罚
     if cache_tokens > 0:
         excess = (lengths.float() - length_threshold).clamp(min=0)
@@ -280,22 +312,25 @@ def ErnieXLengthClipProcessor(
 ) -> DataProto:
     """
     仿照 ErnieXLengthClipProcessor 的逻辑，用高质量样本的最短长度裁剪整个组。
-    
+
     处理流程：
     1. 按 uid 分组
     2. 对每个组，找到高 reward 样本（reward > threshold）
     3. 计算 clip_length = min(所有高质量样本的长度)
     4. 对组内所有样本应用裁剪（超出部分置 0）
-    
+
     Args:
         batch: 输入的 DataProto
         reward_threshold: 高质量样本的 reward 阈值
         thought_end_id: 思考结束标记的 token id（-1 表示不使用）
         clip_keys: 需要裁剪的 batch keys
-    
+
     Returns:
         DataProto: 裁剪后的 batch
     """
+    print(f"[ErnieXLengthClipProcessor] ========== Start ==========")
+    print(f"[ErnieXLengthClipProcessor] Config: reward_threshold={reward_threshold}, thought_end_id={thought_end_id}")
+
     if clip_keys is None:
         clip_keys = [
             "responses",
@@ -337,12 +372,14 @@ def ErnieXLengthClipProcessor(
         # 初始化 clip_length 为很大的值
         clip_length = 1000000
         has_high_reward = False
-        
+
+        print(f"[ErnieXLengthClipProcessor] Processing group {uid} ({len(indices)} samples)")
+
         for idx in indices:
             if rewards[idx] > reward_threshold:
                 has_high_reward = True
                 resp = responses[idx]  # [response_len]
-                
+
                 if thought_end_id == -1:
                     # 没有 thought_end 标记，使用 response_mask 计算有效长度
                     valid_length = response_mask[idx].sum().item()
@@ -355,16 +392,17 @@ def ErnieXLengthClipProcessor(
                     except ValueError:
                         # 没找到标记，使用 mask 长度
                         valid_length = response_mask[idx].sum().item()
-                
+
                 clip_length = min(clip_length, int(valid_length))
-        
+
         if has_high_reward:
             uid_to_clip_length[uid] = clip_length
+            print(f"[ErnieXLengthClipProcessor]   Group {uid}: has high_reward, clip_length={clip_length}")
             if clip_length < response_len:
                 stats["clipped_groups"] += 1
         else:
             uid_to_clip_length[uid] = None
-            stats["no_high_reward_groups"] += 1
+            print(f"[ErnieXLengthClipProcessor]   Group {uid}: NO high_reward, no clipping")
     
     # 应用裁剪
     clipped_samples = 0
@@ -395,19 +433,23 @@ def ErnieXLengthClipProcessor(
 def remove_rejected_samples(batch: DataProto) -> DataProto:
     """
     移除 DataProto 中 rejected=True 的样本，只保留 rejected=False 的。
-    
+
     Args:
         batch: 输入的 DataProto，需包含 non_tensor_batch["rejected"]
-    
+
     Returns:
         DataProto: 过滤后的 batch
     """
+    print(f"[remove_rejected_samples] ========== Start ==========")
+
     if "rejected" not in batch.non_tensor_batch:
         print("[remove_rejected_samples] no 'rejected' field found, returning original batch")
         return batch
-    
+
     rejected = batch.non_tensor_batch["rejected"]
     bsz = len(rejected)
+    print(f"[remove_rejected_samples] Batch size: {bsz}")
+    print(f"[remove_rejected_samples] Rejected samples before filter: {rejected.sum()}")
     
     # 找出 rejected=False 的索引
     kept_indices = np.where(~rejected)[0]
@@ -452,30 +494,34 @@ def dynamic_batching(
 ) -> DataProto:
     """
     动态批处理：将组数补齐为 mini_batch_size 的整数倍。
-    
+
     逻辑：
     - 每组有 rollout 个样本
     - 总样本数需要是 (mini_batch_size * rollout) 的整数倍
     - 复制单位是整组
-    
+
     示例：
         mini_batch_size=30, rollout=8
         当前 392 条数据 = 49 组
         49 % 30 = 19 → 需要补 30 - 19 = 11 组
         11 * 8 = 88 条数据
         392 + 88 = 480 = 240 * 2 ✓
-    
+
     Args:
         batch: 输入的 DataProto
         mini_batch_size: mini batch 的组数
         rollout: 每组的样本数
-    
+
     Returns:
         DataProto: 补齐后的 batch
     """
+    print(f"[dynamic_batching] ========== Start ==========")
+    print(f"[dynamic_batching] Config: mini_batch_size={mini_batch_size}, rollout={rollout}")
+
     uids = batch.non_tensor_batch["uid"]
     bsz = len(uids)
-    
+    print(f"[dynamic_batching] Input batch size: {bsz} samples")
+
     # 按 uid 分组，获取每组的索引
     uid_to_indices = defaultdict(list)
     for idx, uid in enumerate(uids):
@@ -555,7 +601,6 @@ def dynamic_batching(
           f"global_mini_batch_size={mini_batch_size * rollout}")
     
     return batch
-
 
 
 

@@ -340,6 +340,11 @@ class RayPPOTrainer:
         self.ernie_clip_reward_threshold = self.config.algorithm.get("ernie_clip_reward_threshold", 0.9)
         self.ernie_thought_end_id = self.config.algorithm.get("ernie_thought_end_id", -1)
         
+        # ErnieXRewardFilterV2 配置
+        self.use_ernie_reward_filter_v2 = self.config.algorithm.get("use_ernie_reward_filter_v2", False)
+        self.ernie_filter_v2_max_error_rate = self.config.algorithm.get("ernie_filter_v2_max_error_rate", 0.5)
+        self.ernie_filter_v2_min_variance = self.config.algorithm.get("ernie_filter_v2_min_variance", 1e-4)
+        
         # dynamic_batching 配置
         self.use_dynamic_batching = self.config.algorithm.get("use_dynamic_batching", False)
 
@@ -1419,7 +1424,30 @@ class RayPPOTrainer:
                         # extract reward_tensor and reward_extra_infos_dict for training
                         reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 
+                        # ========== Raw Reward Metrics (before Filter Pipeline) ==========
+                        _raw_scores = reward_tensor.sum(-1)  # (batch_size,) per-sample scalar
+                        _error_mask = _raw_scores <= self.ernie_error_reward  # True = error sample
+                        _valid_mask = ~_error_mask
+                        _n_total = _raw_scores.numel()
+                        _n_error = int(_error_mask.sum().item())
+                        _valid_scores = _raw_scores[_valid_mask]
+                        if _valid_scores.numel() > 0:
+                            metrics["raw_reward/mean"] = _valid_scores.mean().item()
+                            metrics["raw_reward/std"] = _valid_scores.std().item() if _valid_scores.numel() > 1 else 0.0
+                        metrics["raw_reward/error_ratio"] = _n_error / _n_total if _n_total > 0 else 0.0
+
+                         
                         # ========== Filter Pipeline ==========
+                        # Step 0: ErnieXRewardFilterV2（按组过滤错误率高/方差低的组）
+                        if self.use_ernie_reward_filter_v2:
+                            with marked_timer("ernie_reward_filter_v2", timing_raw):
+                                batch = ErnieXRewardFilterV2(
+                                    batch,
+                                    max_error_rate=self.ernie_filter_v2_max_error_rate,
+                                    min_variance=self.ernie_filter_v2_min_variance,
+                                    error_reward_threshold=self.ernie_error_reward,
+                                )
+
                         # Step 1: ErnieXBaseRewardProcessor（处理无效 reward + 超长）
                         if self.use_ernie_base_reward_processor:
                             with marked_timer("ernie_base_reward_processor", timing_raw):
