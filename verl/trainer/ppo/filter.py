@@ -1,17 +1,18 @@
-
 """
 Filter utilities for PPO training data.
 """
 
+import math
 import random
 from collections import defaultdict
-from typing import Optional
+from copy import deepcopy
+
 import numpy as np
 import torch
 from tensordict import TensorDict
-import math
-from copy import deepcopy
+
 from verl import DataProto
+
 
 def ErnieXRewardFilterV2(
     batch: DataProto,
@@ -36,8 +37,10 @@ def ErnieXRewardFilterV2(
     uids = batch.non_tensor_batch["uid"]
     bsz = len(uids)
 
-    print(f"[ErnieXRewardFilterV2] ========== Start filtering ==========")
-    print(f"[ErnieXRewardFilterV2] Config: max_error_rate={max_error_rate}, min_variance={min_variance}, error_reward_threshold={error_reward_threshold}")
+    print("[ErnieXRewardFilterV2] ========== Start filtering ==========")
+    print(
+        f"[ErnieXRewardFilterV2] Config: max_error_rate={max_error_rate}, min_variance={min_variance}, error_reward_threshold={error_reward_threshold}"
+    )
     print(f"[ErnieXRewardFilterV2] Batch size: {bsz}")
 
     # 初始化 rejected 数组
@@ -59,7 +62,9 @@ def ErnieXRewardFilterV2(
         error_rate = error_cnt / len(indices)
 
         print(f"[ErnieXRewardFilterV2] Group {uid} ({len(indices)} samples): rewards={group_rewards}")
-        print(f"[ErnieXRewardFilterV2]   error_mask={error_mask}, error_cnt={error_cnt}/{len(indices)}, error_rate={error_rate:.2%}")
+        print(
+            f"[ErnieXRewardFilterV2]   error_mask={error_mask}, error_cnt={error_cnt}/{len(indices)}, error_rate={error_rate:.2%}"
+        )
 
         # 规则1: 错误率不能超过阈值
         if error_rate > max_error_rate:
@@ -79,7 +84,7 @@ def ErnieXRewardFilterV2(
                     rejected[idx] = True
                 continue
         else:
-            print(f"[ErnieXRewardFilterV2]   REJECTED: no non-error samples")
+            print("[ErnieXRewardFilterV2]   REJECTED: no non-error samples")
 
         print(f"[ErnieXRewardFilterV2]   Group {uid} ACCEPTED")
 
@@ -87,11 +92,10 @@ def ErnieXRewardFilterV2(
     batch.non_tensor_batch["rejected"] = rejected
 
     rejected_count = rejected.sum()
-    print(f"[ErnieXRewardFilterV2] ========== Summary ==========")
-    print(f"[ErnieXRewardFilterV2] Total rejected: {rejected_count}/{bsz} ({rejected_count/bsz*100:.1f}%)")
+    print("[ErnieXRewardFilterV2] ========== Summary ==========")
+    print(f"[ErnieXRewardFilterV2] Total rejected: {rejected_count}/{bsz} ({rejected_count / bsz * 100:.1f}%)")
 
     return batch
-
 
 
 def ErnieXBaseRewardProcessor(
@@ -122,14 +126,18 @@ def ErnieXBaseRewardProcessor(
     Returns:
         DataProto: 添加了 rejected 标记，并修复了无效样本的 batch
     """
-    print(f"[ErnieXBaseRewardProcessor] ========== Start ==========")
-    print(f"[ErnieXBaseRewardProcessor] Config: error_reward={error_reward}, accept_ratio={accept_ratio}, max_tokens={max_tokens}, overlength_reward={overlength_reward}")
+    print("[ErnieXBaseRewardProcessor] ========== Start ==========")
+    print(
+        f"[ErnieXBaseRewardProcessor] Config: error_reward={error_reward}, accept_ratio={accept_ratio}, max_tokens={max_tokens}, overlength_reward={overlength_reward}"
+    )
 
     rewards = batch.batch["rm_scores"].sum(dim=-1).cpu().numpy()
     uids = batch.non_tensor_batch["uid"]
     bsz = len(uids)
     print(f"[ErnieXBaseRewardProcessor] Batch size: {bsz}")
-    print(f"[ErnieXBaseRewardProcessor] Rewards: min={rewards.min():.2f}, max={rewards.max():.2f}, mean={rewards.mean():.2f}")
+    print(
+        f"[ErnieXBaseRewardProcessor] Rewards: min={rewards.min():.2f}, max={rewards.max():.2f}, mean={rewards.mean():.2f}"
+    )
 
     # 读取已有的 rejected，如果没有则初始化
     if "rejected" in batch.non_tensor_batch:
@@ -137,19 +145,19 @@ def ErnieXBaseRewardProcessor(
         print(f"[ErnieXBaseRewardProcessor] Existing rejected field found, {rejected.sum()} samples already rejected")
     else:
         rejected = np.zeros(bsz, dtype=bool)
-    
+
     # 按 uid 分组
     uid_to_indices = defaultdict(list)
     for idx, uid in enumerate(uids):
         uid_to_indices[str(uid)].append(idx)
-    
+
     # 用于记录需要替换的索引映射 {原索引: 替换为的索引}
     replacement_map = {}
-    
+
     for uid, indices in uid_to_indices.items():
         group_rewards = rewards[indices]
         target_size = len(indices)
-        
+
         # Step 1: 识别有效和无效样本
         # 无效：reward 接近 error_reward (差值 < 1e-3)
         valid_indices = []
@@ -159,23 +167,25 @@ def ErnieXBaseRewardProcessor(
                 invalid_indices.append(idx)
             else:
                 valid_indices.append(idx)
-        
+
         valid_count = len(valid_indices)
         valid_ratio = valid_count / target_size if target_size > 0 else 0.0
-        
+
         # Step 2: 判断是否 reject
         # 条件：无有效样本 或 有效比例 < accept_ratio
         if valid_count == 0 or valid_ratio < accept_ratio:
             for idx in indices:
                 rejected[idx] = True
-            print(f"[ErnieXBaseRewardProcessor] Group {uid} rejected: "
-                  f"valid_ratio={valid_ratio:.2%} < accept_ratio={accept_ratio}")
+            print(
+                f"[ErnieXBaseRewardProcessor] Group {uid} rejected: "
+                f"valid_ratio={valid_ratio:.2%} < accept_ratio={accept_ratio}"
+            )
             continue
-        
+
         # Step 3: 如果全部有效，无需处理
         if valid_count == target_size:
             continue
-        
+
         # Step 4: 用有效样本填补无效位置
         # 从有效样本中随机采样，替换无效样本
         random.shuffle(valid_indices)
@@ -183,10 +193,12 @@ def ErnieXBaseRewardProcessor(
             # 随机选一个有效样本的索引作为替换源
             source_idx = random.choice(valid_indices)
             replacement_map[invalid_idx] = source_idx
-        
-        print(f"[ErnieXBaseRewardProcessor] Group {uid}: "
-              f"replaced {len(invalid_indices)} invalid samples from {valid_count} valid")
-    
+
+        print(
+            f"[ErnieXBaseRewardProcessor] Group {uid}: "
+            f"replaced {len(invalid_indices)} invalid samples from {valid_count} valid"
+        )
+
     # 应用替换：将无效位置的数据替换为有效样本的数据
     if replacement_map:
         for invalid_idx, source_idx in replacement_map.items():
@@ -196,15 +208,13 @@ def ErnieXBaseRewardProcessor(
             # 复制 non_tensor 数据（除了 uid，保持原 uid 不变）
             for key in batch.non_tensor_batch.keys():
                 if key != "uid":
-                    batch.non_tensor_batch[key][invalid_idx] = deepcopy(
-                        batch.non_tensor_batch[key][source_idx]
-                    )
-    
+                    batch.non_tensor_batch[key][invalid_idx] = deepcopy(batch.non_tensor_batch[key][source_idx])
+
     # ========== Step 3: 处理超长输出（在填补之后）==========
     rm_scores = batch.batch["rm_scores"]  # 重新获取（可能被替换过）
     response_mask = batch.batch["response_mask"]
     lengths = response_mask.sum(dim=-1)
-    
+
     overlength_count = 0
     for idx in range(bsz):
         if rejected[idx]:
@@ -212,21 +222,20 @@ def ErnieXBaseRewardProcessor(
         if lengths[idx] >= max_tokens:
             valid_positions = response_mask[idx].nonzero(as_tuple=True)[0]
             last_valid_pos = valid_positions[-1].item()
-            
+
             rm_scores[idx].zero_()
             rm_scores[idx, last_valid_pos] = overlength_reward
             overlength_count += 1
-    
+
     batch.batch["rm_scores"] = rm_scores
 
     # 将 rejected 标记添加到 batch
     batch.non_tensor_batch["rejected"] = rejected
-    
+
     # 统计信息
     rejected_count = rejected.sum()
-    print(f"[ErnieXBaseRewardProcessor] Total: {bsz} samples, "
-          f"rejected: {rejected_count} ({rejected_count/bsz:.1%})")
-    
+    print(f"[ErnieXBaseRewardProcessor] Total: {bsz} samples, rejected: {rejected_count} ({rejected_count / bsz:.1%})")
+
     return batch
 
 
@@ -252,12 +261,12 @@ def ErnieXLengthRewardProcessor(
     Returns:
         DataProto: 调整了 rm_scores 的 batch
     """
-    print(f"[ErnieXLengthRewardProcessor] ========== Start ==========")
+    print("[ErnieXLengthRewardProcessor] ========== Start ==========")
     print(f"[ErnieXLengthRewardProcessor] Config: max_tokens={max_tokens}, cache_tokens={cache_tokens}")
 
-    responses = batch.batch["responses"]          # [bsz, response_len]
+    responses = batch.batch["responses"]  # [bsz, response_len]
     response_mask = batch.batch["response_mask"]  # [bsz, response_len]
-    rm_scores = batch.batch["rm_scores"]          # [bsz, response_len]
+    rm_scores = batch.batch["rm_scores"]  # [bsz, response_len]
     bsz = responses.size(0)
 
     length_threshold = max_tokens - cache_tokens
@@ -267,7 +276,9 @@ def ErnieXLengthRewardProcessor(
 
     # 原始 reward（用于日志）
     original_rewards = rm_scores.sum(dim=-1)
-    print(f"[ErnieXLengthRewardProcessor] Lengths: min={lengths.min().item()}, max={lengths.max().item()}, mean={lengths.float().mean().item():.1f}")
+    print(
+        f"[ErnieXLengthRewardProcessor] Lengths: min={lengths.min().item()}, max={lengths.max().item()}, mean={lengths.float().mean().item():.1f}"
+    )
 
     # 计算惩罚
     if cache_tokens > 0:
@@ -275,7 +286,7 @@ def ErnieXLengthRewardProcessor(
         penalty = excess / cache_tokens  # [bsz]
     else:
         penalty = torch.zeros(bsz, device=rm_scores.device)
-    
+
     # 将惩罚应用到每个样本的最后一个有效位置
     # 找到每个样本最后一个有效位置的索引
     for i in range(bsz):
@@ -285,24 +296,29 @@ def ErnieXLengthRewardProcessor(
             if len(valid_positions) > 0:
                 last_pos = valid_positions[-1].item()
                 rm_scores[i, last_pos] -= penalty[i]
-    
+
     # 更新 batch
     batch.batch["rm_scores"] = rm_scores
-    
+
     # 打印统计
     new_rewards = (rm_scores * response_mask).sum(dim=-1)
     adjusted_count = (penalty > 0).sum().item()
-    
-    print(f"[ErnieXLengthRewardProcessor] max_tokens={max_tokens}, cache_tokens={cache_tokens}, "
-          f"threshold={length_threshold}")
+
+    print(
+        f"[ErnieXLengthRewardProcessor] max_tokens={max_tokens}, cache_tokens={cache_tokens}, "
+        f"threshold={length_threshold}"
+    )
     print(f"[ErnieXLengthRewardProcessor] adjusted {adjusted_count}/{bsz} samples")
-    
+
     if adjusted_count > 0:
         mask = penalty > 0
-        print(f"[ErnieXLengthRewardProcessor] avg_length_excess={(lengths[mask].float() - length_threshold).mean():.1f}, "
-              f"avg_penalty={penalty[mask].mean():.4f}")
-    
+        print(
+            f"[ErnieXLengthRewardProcessor] avg_length_excess={(lengths[mask].float() - length_threshold).mean():.1f}, "
+            f"avg_penalty={penalty[mask].mean():.4f}"
+        )
+
     return batch
+
 
 def ErnieXLengthClipProcessor(
     batch: DataProto,
@@ -328,7 +344,7 @@ def ErnieXLengthClipProcessor(
     Returns:
         DataProto: 裁剪后的 batch
     """
-    print(f"[ErnieXLengthClipProcessor] ========== Start ==========")
+    print("[ErnieXLengthClipProcessor] ========== Start ==========")
     print(f"[ErnieXLengthClipProcessor] Config: reward_threshold={reward_threshold}, thought_end_id={thought_end_id}")
 
     if clip_keys is None:
@@ -340,26 +356,26 @@ def ErnieXLengthClipProcessor(
             "ref_log_prob",
             "rollout_log_probs",
         ]
-    
+
     # 过滤出 batch 中存在的 keys
     clip_keys = [key for key in clip_keys if key in batch.batch]
-    
+
     # 提取数据
-    responses = batch.batch["responses"]          # [bsz, response_len]
+    responses = batch.batch["responses"]  # [bsz, response_len]
     response_mask = batch.batch["response_mask"]  # [bsz, response_len]
-    rm_scores = batch.batch["rm_scores"]          # [bsz, response_len]
+    rm_scores = batch.batch["rm_scores"]  # [bsz, response_len]
     uids = batch.non_tensor_batch["uid"]
     bsz = responses.size(0)
     response_len = responses.size(1)
-    
+
     # 计算每个样本的总 reward
     rewards = (rm_scores * response_mask).sum(dim=-1).cpu().numpy()  # [bsz]
-    
+
     # 按 uid 分组
     uid_to_indices = defaultdict(list)
     for idx, uid in enumerate(uids):
         uid_to_indices[str(uid)].append(idx)
-    
+
     # 记录每个组的 clip_length
     uid_to_clip_length = {}
     stats = {
@@ -367,7 +383,7 @@ def ErnieXLengthClipProcessor(
         "clipped_groups": 0,
         "no_high_reward_groups": 0,
     }
-    
+
     for uid, indices in uid_to_indices.items():
         # 初始化 clip_length 为很大的值
         clip_length = 1000000
@@ -403,30 +419,31 @@ def ErnieXLengthClipProcessor(
         else:
             uid_to_clip_length[uid] = None
             print(f"[ErnieXLengthClipProcessor]   Group {uid}: NO high_reward, no clipping")
-    
+
     # 应用裁剪
     clipped_samples = 0
     for uid, indices in uid_to_indices.items():
         clip_length = uid_to_clip_length[uid]
-        
+
         if clip_length is None or clip_length >= response_len:
             continue
-        
+
         for idx in indices:
             clipped_samples += 1
             # 对所有需要裁剪的 key，将超出部分置 0
             for key in clip_keys:
                 batch.batch[key][idx, clip_length:] = 0
-    
+
     # 打印统计
-    print(f"[ErnieXLengthClipProcessor] reward_threshold={reward_threshold}, "
-          f"thought_end_id={thought_end_id}")
-    print(f"[ErnieXLengthClipProcessor] total_groups={stats['total_groups']}, "
-          f"clipped_groups={stats['clipped_groups']}, "
-          f"no_high_reward_groups={stats['no_high_reward_groups']}")
+    print(f"[ErnieXLengthClipProcessor] reward_threshold={reward_threshold}, thought_end_id={thought_end_id}")
+    print(
+        f"[ErnieXLengthClipProcessor] total_groups={stats['total_groups']}, "
+        f"clipped_groups={stats['clipped_groups']}, "
+        f"no_high_reward_groups={stats['no_high_reward_groups']}"
+    )
     if clipped_samples > 0:
         print(f"[ErnieXLengthClipProcessor] clipped_samples={clipped_samples}")
-    
+
     return batch
 
 
@@ -440,7 +457,7 @@ def remove_rejected_samples(batch: DataProto) -> DataProto:
     Returns:
         DataProto: 过滤后的 batch
     """
-    print(f"[remove_rejected_samples] ========== Start ==========")
+    print("[remove_rejected_samples] ========== Start ==========")
 
     if "rejected" not in batch.non_tensor_batch:
         print("[remove_rejected_samples] no 'rejected' field found, returning original batch")
@@ -450,26 +467,26 @@ def remove_rejected_samples(batch: DataProto) -> DataProto:
     bsz = len(rejected)
     print(f"[remove_rejected_samples] Batch size: {bsz}")
     print(f"[remove_rejected_samples] Rejected samples before filter: {rejected.sum()}")
-    
+
     # 找出 rejected=False 的索引
     kept_indices = np.where(~rejected)[0]
     kept_count = len(kept_indices)
     rejected_count = bsz - kept_count
-    
+
     if rejected_count == 0:
         print(f"[remove_rejected_samples] no rejected samples, keeping all {bsz}")
         return batch
-    
+
     if kept_count == 0:
         print(f"[remove_rejected_samples] all {bsz} samples rejected, returning empty batch")
         batch.batch = TensorDict({}, batch_size=[0])
         batch.non_tensor_batch = {}
         return batch
-    
+
     # 过滤 tensor 数据
     kept_indices_tensor = torch.tensor(kept_indices, dtype=torch.long)
     batch.batch = batch.batch[kept_indices_tensor]
-    
+
     # 过滤 non_tensor 数据
     new_non_tensor = {}
     for key, value in batch.non_tensor_batch.items():
@@ -480,11 +497,10 @@ def remove_rejected_samples(batch: DataProto) -> DataProto:
         else:
             new_non_tensor[key] = value[kept_indices]
     batch.non_tensor_batch = new_non_tensor
-    
-    print(f"[remove_rejected_samples] {bsz} -> {kept_count} (removed {rejected_count} rejected)")
-    
-    return batch
 
+    print(f"[remove_rejected_samples] {bsz} -> {kept_count} (removed {rejected_count} rejected)")
+
+    return batch
 
 
 def dynamic_batching(
@@ -515,7 +531,7 @@ def dynamic_batching(
     Returns:
         DataProto: 补齐后的 batch
     """
-    print(f"[dynamic_batching] ========== Start ==========")
+    print("[dynamic_batching] ========== Start ==========")
     print(f"[dynamic_batching] Config: mini_batch_size={mini_batch_size}, rollout={rollout}")
 
     uids = batch.non_tensor_batch["uid"]
@@ -526,10 +542,10 @@ def dynamic_batching(
     uid_to_indices = defaultdict(list)
     for idx, uid in enumerate(uids):
         uid_to_indices[str(uid)].append(idx)
-    
+
     num_groups = len(uid_to_indices)
     group_ids = list(uid_to_indices.keys())
-    
+
     # 检查是否需要补齐
     if num_groups % mini_batch_size == 0:
         # 初始化 is_repeat
@@ -537,24 +553,24 @@ def dynamic_batching(
             batch.non_tensor_batch["is_repeat"] = np.zeros(bsz, dtype=bool)
         print(f"[dynamic_batching] {num_groups} groups already aligned to {mini_batch_size}")
         return batch
-    
+
     # 计算需要补充的组数
     remainder_groups = mini_batch_size - (num_groups % mini_batch_size)
-    
+
     # 随机选择要复制的组
     repeat_group_ids = random.choices(group_ids, k=remainder_groups)
-    
+
     # 收集需要复制的样本索引
     repeat_indices = []
     for gid in repeat_group_ids:
         repeat_indices.extend(uid_to_indices[gid])
-    
+
     repeat_indices_tensor = torch.tensor(repeat_indices, dtype=torch.long)
     remainder_samples = len(repeat_indices)
-    
+
     # 复制 tensor 数据
     repeated_batch = batch.batch[repeat_indices_tensor].clone()
-    
+
     # 复制 non_tensor 数据
     repeated_non_tensor = {}
     for key, value in batch.non_tensor_batch.items():
@@ -564,22 +580,22 @@ def dynamic_batching(
             repeated_non_tensor[key] = [value[i] for i in repeat_indices]
         else:
             repeated_non_tensor[key] = value[repeat_indices]
-    
+
     # 初始化 is_repeat 标记
     if "is_repeat" not in batch.non_tensor_batch:
         original_is_repeat = np.zeros(bsz, dtype=bool)
     else:
         original_is_repeat = batch.non_tensor_batch["is_repeat"]
-    
+
     repeated_is_repeat = np.ones(remainder_samples, dtype=bool)
-    
+
     # 合并 tensor 数据
     new_batch_dict = {}
     for key in batch.batch.keys():
         new_batch_dict[key] = torch.cat([batch.batch[key], repeated_batch[key]], dim=0)
-    
+
     batch.batch = TensorDict(new_batch_dict, batch_size=[bsz + remainder_samples])
-    
+
     # 合并 non_tensor 数据
     for key, value in batch.non_tensor_batch.items():
         if key == "is_repeat":
@@ -588,21 +604,21 @@ def dynamic_batching(
             batch.non_tensor_batch[key] = np.concatenate([value, repeated_non_tensor[key]])
         elif isinstance(value, list):
             batch.non_tensor_batch[key] = value + repeated_non_tensor[key]
-    
+
     # 设置 is_repeat
     batch.non_tensor_batch["is_repeat"] = np.concatenate([original_is_repeat, repeated_is_repeat])
-    
+
     new_bsz = bsz + remainder_samples
     new_num_groups = num_groups + remainder_groups
-    
+
     print(f"[dynamic_batching] groups: {num_groups} -> {new_num_groups} (+{remainder_groups})")
     print(f"[dynamic_batching] samples: {bsz} -> {new_bsz} (+{remainder_samples})")
-    print(f"[dynamic_batching] aligned to mini_batch_size={mini_batch_size}, "
-          f"global_mini_batch_size={mini_batch_size * rollout}")
-    
+    print(
+        f"[dynamic_batching] aligned to mini_batch_size={mini_batch_size}, "
+        f"global_mini_batch_size={mini_batch_size * rollout}"
+    )
+
     return batch
-
-
 
 
 # python3 -m verl.trainer.main_ppo \
@@ -703,13 +719,3 @@ def dynamic_batching(
 #     trainer.test_freq=-1 \
 #     trainer.total_epochs=200 \
 #     $@
-
-
-
-
-
-
-
-
-
-
