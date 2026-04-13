@@ -43,10 +43,10 @@ def _normalize_boxed(answer: str) -> str:
       "\\boxed{204}"  -> "\\boxed{204}"  (不重复套)
     """
     answer = answer.strip()
-    if re.match(r'^\\boxed\{.*\}$', answer, re.DOTALL):
+    if re.match(r"^\\boxed\{.*\}$", answer, re.DOTALL):
         return answer
     if answer.startswith("\\box{"):
-        return "\\boxed{" + answer[len("\\box{"):]
+        return "\\boxed{" + answer[len("\\box{") :]
     return "\\boxed{" + answer + "}"
 
 
@@ -73,9 +73,7 @@ def compute_score(
     is_correct = boxed_gt in solution_str
 
     if is_correct:
-        logger.info(
-            f"[rule_reward] CORRECT | data_source={data_source} | ground_truth={boxed_gt}"
-        )
+        logger.info(f"[rule_reward] CORRECT | data_source={data_source} | ground_truth={boxed_gt}")
     else:
         logger.debug(
             f"[rule_reward] WRONG | data_source={data_source} | "
