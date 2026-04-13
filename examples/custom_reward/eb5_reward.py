@@ -55,7 +55,6 @@ class ErnieXVerifier:
     """Async reward calculation core logic"""
 
     def __init__(self, config, *args, **kwargs):
-
         # print(f"Initializing ErnieXVerifierHandler, received config: {config}")
 
         # parse url
@@ -353,7 +352,6 @@ class ErnieXVerifier:
 
 
 def compute_score(data_source, solution_str, ground_truth, extra_info=None):
-
     config = {
         "reward_urls": [
             "http://10.11.153.88:8101/api/v1/reward/task",
