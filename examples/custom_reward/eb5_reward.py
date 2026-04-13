@@ -49,7 +49,7 @@ class RequestData:
     run_id: str
 
 
-class ErnieXVerifier():
+class ErnieXVerifier:
     """Handler for calculating rewards in pipeline"""
 
     """Async reward calculation core logic"""
@@ -113,14 +113,18 @@ class ErnieXVerifier():
                 if "data" not in result or "task_id" not in result["data"]:
                     raise ValueError("Invalid task ID response")
                 return result["data"]["task_id"]
-            except (requests.exceptions.ConnectionError,
-                    requests.exceptions.Timeout,
-                    requests.exceptions.RemoteDisconnected,
-                    requests.exceptions.HTTPError) as e:
+            except (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.RemoteDisconnected,
+                requests.exceptions.HTTPError,
+            ) as e:
                 if attempt < 4:  # not the last attempt
-                    wait_time = (2 ** attempt)  # exponential backoff: 1, 2, 4, 8 seconds
-                    print(f"[ErnieXVerifier] Get task_id failed (attempt {attempt + 1}/5): {e}, "
-                          f"retrying in {wait_time}s...")
+                    wait_time = 2**attempt  # exponential backoff: 1, 2, 4, 8 seconds
+                    print(
+                        f"[ErnieXVerifier] Get task_id failed (attempt {attempt + 1}/5): {e}, "
+                        f"retrying in {wait_time}s..."
+                    )
                     time.sleep(wait_time)
                 else:
                     print(f"[ErnieXVerifier] Get task_id failed after 5 attempts: {e}")
@@ -203,7 +207,7 @@ class ErnieXVerifier():
                 if len(answer) > 0 and answer[0] == "\n":
                     answer = answer[1:]
         else:
-            reasoning, answer = None, None
+            _reasoning, answer = None, None
             success = False
 
         data_verifier = {
@@ -246,8 +250,6 @@ class ErnieXVerifier():
         - "code": code tasks with EB45T/X1/Qwen thinking
         - default: standard reward protocol
         """
-        data_id = 0
-        gen_id = 0
 
         step = kwargs.get("step", None)
         run_id = datetime.now().strftime("%S%f") if step is None else str(step)
@@ -260,7 +262,9 @@ class ErnieXVerifier():
                     extra_info["meta"]["has_dead_lock"] = True
 
             # 2. Domain routing for request creation
-            success, reward_request, result_request = await self._create_default_request(data_source, solution_str, ground_truth, extra_info, run_id)
+            success, reward_request, result_request = await self._create_default_request(
+                data_source, solution_str, ground_truth, extra_info, run_id
+            )
 
             # 3. Success check
             if not success:
@@ -271,7 +275,8 @@ class ErnieXVerifier():
                 return reward
 
             # 4. Max tokens check
-            # if "max_tokens" in self._custom_fields and len(data_proto.output_ids) >= self._custom_fields["max_tokens"]:
+            # if "max_tokens" in self._custom_fields and
+            # len(data_proto.output_ids) >= self._custom_fields["max_tokens"]:
             #     print(
             #         "The length of output_ids is too long, its reward will be 0.",
             #     )
@@ -293,14 +298,19 @@ class ErnieXVerifier():
                 except Exception as e:
                     last_error = e
                     if attempt < max_submit_retries - 1:
-                        wait_time = (2 ** attempt)  # 1, 2, 4 seconds
-                        print(f"[ErnieXVerifier] Reward request failed (attempt {attempt + 1}/{max_submit_retries}): {e}, "
-                              f"retrying in {wait_time}s...")
+                        wait_time = 2**attempt  # 1, 2, 4 seconds
+                        print(
+                            f"[ErnieXVerifier] Reward request failed"
+                            f" (attempt {attempt + 1}/{max_submit_retries}): {e}, "
+                            f"retrying in {wait_time}s..."
+                        )
                         await asyncio.sleep(wait_time)
 
             if not submit_success:
-                print(f"[ErnieXVerifier] Reward service unavailable after {max_submit_retries} attempts: {last_error}. "
-                      f"Using default_error_reward: {self.default_error_reward}")
+                print(
+                    f"[ErnieXVerifier] Reward service unavailable after {max_submit_retries} attempts: {last_error}. "
+                    f"Using default_error_reward: {self.default_error_reward}"
+                )
                 reward = self.default_error_reward
                 return reward
 
@@ -310,15 +320,17 @@ class ErnieXVerifier():
                 # print(
                 #     f"reward_num is None, reward set to {self.default_error_reward}",
                 # )
-                reward_num = self.default_error_reward            
+                reward_num = self.default_error_reward
             # print(
             #     f"=====> reward server response: {result_res}",
             # )
             reward = reward_num
 
         except Exception as e:
-            print(f"[ErnieXVerifier] Exception during calculate_reward: {str(e)}, "
-                  f"its reward will be {self.default_error_reward}")
+            print(
+                f"[ErnieXVerifier] Exception during calculate_reward: {str(e)}, "
+                f"its reward will be {self.default_error_reward}"
+            )
             reward = self.default_error_reward
 
         return reward
@@ -341,12 +353,12 @@ class ErnieXVerifier():
 
 
 def compute_score(data_source, solution_str, ground_truth, extra_info=None):
-    
+
     config = {
         "reward_urls": [
             "http://10.11.153.88:8101/api/v1/reward/task",
             "http://10.11.153.88:8101/api/v1/reward",
-            "http://10.11.153.88:8101/api/v1/reward/result"
+            "http://10.11.153.88:8101/api/v1/reward/result",
         ],
         "default_correct_reward": 1.0,
         "default_error_reward": 0.0,

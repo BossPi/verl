@@ -39,7 +39,9 @@ def ErnieXRewardFilterV2(
 
     print("[ErnieXRewardFilterV2] ========== Start filtering ==========")
     print(
-        f"[ErnieXRewardFilterV2] Config: max_error_rate={max_error_rate}, min_variance={min_variance}, error_reward_threshold={error_reward_threshold}"
+        f"[ErnieXRewardFilterV2] Config: max_error_rate={max_error_rate},"
+        f" min_variance={min_variance},"
+        f" error_reward_threshold={error_reward_threshold}"
     )
     print(f"[ErnieXRewardFilterV2] Batch size: {bsz}")
 
@@ -63,7 +65,9 @@ def ErnieXRewardFilterV2(
 
         print(f"[ErnieXRewardFilterV2] Group {uid} ({len(indices)} samples): rewards={group_rewards}")
         print(
-            f"[ErnieXRewardFilterV2]   error_mask={error_mask}, error_cnt={error_cnt}/{len(indices)}, error_rate={error_rate:.2%}"
+            f"[ErnieXRewardFilterV2]   error_mask={error_mask},"
+            f" error_cnt={error_cnt}/{len(indices)},"
+            f" error_rate={error_rate:.2%}"
         )
 
         # 规则1: 错误率不能超过阈值
@@ -128,7 +132,9 @@ def ErnieXBaseRewardProcessor(
     """
     print("[ErnieXBaseRewardProcessor] ========== Start ==========")
     print(
-        f"[ErnieXBaseRewardProcessor] Config: error_reward={error_reward}, accept_ratio={accept_ratio}, max_tokens={max_tokens}, overlength_reward={overlength_reward}"
+        f"[ErnieXBaseRewardProcessor] Config: error_reward={error_reward},"
+        f" accept_ratio={accept_ratio}, max_tokens={max_tokens},"
+        f" overlength_reward={overlength_reward}"
     )
 
     rewards = batch.batch["rm_scores"].sum(dim=-1).cpu().numpy()
@@ -136,7 +142,9 @@ def ErnieXBaseRewardProcessor(
     bsz = len(uids)
     print(f"[ErnieXBaseRewardProcessor] Batch size: {bsz}")
     print(
-        f"[ErnieXBaseRewardProcessor] Rewards: min={rewards.min():.2f}, max={rewards.max():.2f}, mean={rewards.mean():.2f}"
+        f"[ErnieXBaseRewardProcessor] Rewards:"
+        f" min={rewards.min():.2f}, max={rewards.max():.2f},"
+        f" mean={rewards.mean():.2f}"
     )
 
     # 读取已有的 rejected，如果没有则初始化
@@ -275,9 +283,11 @@ def ErnieXLengthRewardProcessor(
     lengths = response_mask.sum(dim=-1)  # [bsz]
 
     # 原始 reward（用于日志）
-    original_rewards = rm_scores.sum(dim=-1)
+    rm_scores.sum(dim=-1)
     print(
-        f"[ErnieXLengthRewardProcessor] Lengths: min={lengths.min().item()}, max={lengths.max().item()}, mean={lengths.float().mean().item():.1f}"
+        f"[ErnieXLengthRewardProcessor] Lengths:"
+        f" min={lengths.min().item()}, max={lengths.max().item()},"
+        f" mean={lengths.float().mean().item():.1f}"
     )
 
     # 计算惩罚
@@ -301,7 +311,7 @@ def ErnieXLengthRewardProcessor(
     batch.batch["rm_scores"] = rm_scores
 
     # 打印统计
-    new_rewards = (rm_scores * response_mask).sum(dim=-1)
+    (rm_scores * response_mask).sum(dim=-1)
     adjusted_count = (penalty > 0).sum().item()
 
     print(
@@ -365,7 +375,7 @@ def ErnieXLengthClipProcessor(
     response_mask = batch.batch["response_mask"]  # [bsz, response_len]
     rm_scores = batch.batch["rm_scores"]  # [bsz, response_len]
     uids = batch.non_tensor_batch["uid"]
-    bsz = responses.size(0)
+    responses.size(0)
     response_len = responses.size(1)
 
     # 计算每个样本的总 reward
@@ -619,103 +629,3 @@ def dynamic_batching(
     )
 
     return batch
-
-
-# python3 -m verl.trainer.main_ppo \
-#     --config-path=/root/paddlejob/workspace/env_run/kikizou/baidu/personal-code/verl0/verl/verl/trainer/config \
-#     --config-name=ppo_megatron_trainer \
-#     algorithm.adv_estimator=grpo \
-#     \
-#     data.train_files=/root/paddlejob/workspace/env_run/kikizou/math_eval_tinyset.parquet \
-#     data.val_files=/root/paddlejob/workspace/env_run/kikizou/math_eval_tinyset.parquet \
-#     data.train_batch_size=8 \
-#     data.max_prompt_length=2048 \
-#     data.max_response_length=40960 \
-#     data.filter_overlong_prompts=True \
-#     data.truncation=error \
-#     \
-#     actor_rollout_ref.model.path=/root/paddlejob/workspace/env_run/zoukexin/10.67.231.142:8082/Qwen3-8B \
-#     actor_rollout_ref.model.use_remove_padding=True \
-#     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-#     \
-#     actor_rollout_ref.actor.optim.lr=1e-6 \
-#     actor_rollout_ref.actor.ppo_mini_batch_size=8 \
-#     actor_rollout_ref.actor.use_dynamic_bsz=True \
-#     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=45056 \
-#     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
-#     actor_rollout_ref.actor.clip_ratio=5e-4 \
-#     actor_rollout_ref.actor.clip_ratio_low=5e-4 \
-#     actor_rollout_ref.actor.clip_ratio_high=5e-4 \
-#     actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-mean \
-#     actor_rollout_ref.actor.use_kl_loss=False \
-#     actor_rollout_ref.actor.kl_loss_coef=0 \
-#     actor_rollout_ref.actor.entropy_coeff=0 \
-#     actor_rollout_ref.actor.megatron.tensor_model_parallel_size=4 \
-#     actor_rollout_ref.actor.megatron.pipeline_model_parallel_size=2 \
-#     actor_rollout_ref.actor.megatron.param_offload=False \
-#     actor_rollout_ref.actor.megatron.grad_offload=False \
-#     actor_rollout_ref.actor.megatron.optimizer_offload=True \
-#     actor_rollout_ref.actor.optim.weight_decay=0.1 \
-#     actor_rollout_ref.actor.optim.betas=[0.9,0.95] \
-#     actor_rollout_ref.actor.megatron.dtype=bfloat16 \
-#     +actor_rollout_ref.actor.megatron.override_transformer_config.mtp_num_layers=0 \
-#     actor_rollout_ref.actor.megatron.override_transformer_config.recompute_method=uniform \
-#     actor_rollout_ref.actor.megatron.override_transformer_config.recompute_granularity=full \
-#     actor_rollout_ref.actor.megatron.override_transformer_config.recompute_num_layers=1 \
-#     actor_rollout_ref.actor.shuffle=False \
-#     \
-#     actor_rollout_ref.rollout.name=vllm \
-#     actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
-#     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
-#     actor_rollout_ref.rollout.n=8 \
-#     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
-#     actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=4096 \
-#     actor_rollout_ref.rollout.temperature=1.0 \
-#     actor_rollout_ref.rollout.top_p=1.0 \
-#     actor_rollout_ref.rollout.load_format=auto \
-#     actor_rollout_ref.rollout.enable_chunked_prefill=True \
-#     actor_rollout_ref.rollout.enforce_eager=True \
-#     actor_rollout_ref.rollout.free_cache_engine=True \
-#     actor_rollout_ref.rollout.disable_log_stats=False \
-#     actor_rollout_ref.rollout.prometheus.enable=True \
-#     \
-#     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
-#     \
-#     reward.reward_manager.name=eb5 \
-#     reward.reward_manager.source=register \
-#     +reward.reward_manager.urls=["http://10.11.153.88:8101/api/v1/reward/task","http://10.11.153.88:8101/api/v1/reward","http://10.11.153.88:8101/api/v1/reward/result"] \
-#     +reward.reward_manager.reward_auth_key="dltp_model_online:fabd04e8-c946-4933-8e7b-2d78399d2b03" \
-#     +reward.reward_manager.default_error_reward=-10000 \
-#     +reward.reward_manager.enable_thinking=True \
-#     +reward.reward_manager.reward_protocol=normal \
-#     +reward.reward_manager.need_deadlock_check=0 \
-#     +reward.reward_manager.chat_template_format=ERNIE \
-#     reward.num_workers=1 \
-#     algorithm.use_kl_in_reward=False \
-#     algorithm.norm_adv_by_std_in_grpo=True \
-#     \
-#     +algorithm.use_ernie_base_reward_processor=True \
-#     +algorithm.ernie_error_reward=-10000.0 \
-#     +algorithm.ernie_accept_ratio=0.5 \
-#     +algorithm.ernie_max_tokens=40960 \
-#     +algorithm.ernie_overlength_reward=0.0 \
-#     \
-#     +algorithm.use_ernie_length_reward_processor=False \
-#     +algorithm.ernie_length_max_tokens=40960 \
-#     +algorithm.ernie_cache_tokens=200 \
-#     \
-#     +algorithm.use_ernie_length_clip_processor=False \
-#     +algorithm.ernie_clip_reward_threshold=0.001 \
-#     \
-#     +algorithm.use_dynamic_batching=True \
-#     \
-#     trainer.logger='["console","tensorboard"]' \
-#     trainer.project_name='verl_grpo_qwen3_8b_math' \
-#     trainer.experiment_name='qwen3_8b_megatron_tp4_pp2_r2' \
-#     trainer.n_gpus_per_node=8 \
-#     trainer.nnodes=1 \
-#     trainer.save_freq=20 \
-#     trainer.val_before_train=False \
-#     trainer.test_freq=-1 \
-#     trainer.total_epochs=200 \
-#     $@
