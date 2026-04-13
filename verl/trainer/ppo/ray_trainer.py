@@ -42,6 +42,14 @@ from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.config import AlgoConfig
 from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
+from verl.trainer.ppo.filter import (
+    ErnieXBaseRewardProcessor,
+    ErnieXLengthClipProcessor,
+    ErnieXLengthRewardProcessor,
+    ErnieXRewardFilterV2,
+    dynamic_batching,
+    remove_rejected_samples,
+)
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
@@ -64,14 +72,7 @@ from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.config import FSDPEngineConfig
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
-from verl.trainer.ppo.filter import (
-    ErnieXRewardFilterV2,
-    ErnieXBaseRewardProcessor,
-    ErnieXLengthRewardProcessor,
-    ErnieXLengthClipProcessor,
-    remove_rejected_samples,
-    dynamic_batching,
-)
+
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty="kl"):
     """Apply KL penalty to the token-level rewards.
@@ -329,17 +330,22 @@ class RayPPOTrainer:
         self.ernie_accept_ratio = self.config.algorithm.get("ernie_accept_ratio", 0.5)
         self.ernie_max_tokens = self.config.algorithm.get("ernie_max_tokens", 40960)
         self.ernie_overlength_reward = self.config.algorithm.get("ernie_overlength_reward", 0.0)
-        
+
         # ErnieXLengthRewardProcessor 配置
         self.use_ernie_length_reward_processor = self.config.algorithm.get("use_ernie_length_reward_processor", False)
         self.ernie_length_max_tokens = self.config.algorithm.get("ernie_length_max_tokens", 40960)
         self.ernie_cache_tokens = self.config.algorithm.get("ernie_cache_tokens", 0)
-        
+
         # ErnieXLengthClipProcessor 配置
         self.use_ernie_length_clip_processor = self.config.algorithm.get("use_ernie_length_clip_processor", False)
         self.ernie_clip_reward_threshold = self.config.algorithm.get("ernie_clip_reward_threshold", 0.9)
         self.ernie_thought_end_id = self.config.algorithm.get("ernie_thought_end_id", -1)
-        
+
+        # ErnieXRewardFilterV2 配置
+        self.use_ernie_reward_filter_v2 = self.config.algorithm.get("use_ernie_reward_filter_v2", False)
+        self.ernie_filter_v2_max_error_rate = self.config.algorithm.get("ernie_filter_v2_max_error_rate", 0.5)
+        self.ernie_filter_v2_min_variance = self.config.algorithm.get("ernie_filter_v2_min_variance", 1e-4)
+
         # dynamic_batching 配置
         self.use_dynamic_batching = self.config.algorithm.get("use_dynamic_batching", False)
 
@@ -1419,7 +1425,29 @@ class RayPPOTrainer:
                         # extract reward_tensor and reward_extra_infos_dict for training
                         reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 
+                        # ========== Raw Reward Metrics (before Filter Pipeline) ==========
+                        _raw_scores = reward_tensor.sum(-1)  # (batch_size,) per-sample scalar
+                        _error_mask = _raw_scores <= self.ernie_error_reward  # True = error sample
+                        _valid_mask = ~_error_mask
+                        _n_total = _raw_scores.numel()
+                        _n_error = int(_error_mask.sum().item())
+                        _valid_scores = _raw_scores[_valid_mask]
+                        if _valid_scores.numel() > 0:
+                            metrics["raw_reward/mean"] = _valid_scores.mean().item()
+                            metrics["raw_reward/std"] = _valid_scores.std().item() if _valid_scores.numel() > 1 else 0.0
+                        metrics["raw_reward/error_ratio"] = _n_error / _n_total if _n_total > 0 else 0.0
+
                         # ========== Filter Pipeline ==========
+                        # Step 0: ErnieXRewardFilterV2（按组过滤错误率高/方差低的组）
+                        if self.use_ernie_reward_filter_v2:
+                            with marked_timer("ernie_reward_filter_v2", timing_raw):
+                                batch = ErnieXRewardFilterV2(
+                                    batch,
+                                    max_error_rate=self.ernie_filter_v2_max_error_rate,
+                                    min_variance=self.ernie_filter_v2_min_variance,
+                                    error_reward_threshold=self.ernie_error_reward,
+                                )
+
                         # Step 1: ErnieXBaseRewardProcessor（处理无效 reward + 超长）
                         if self.use_ernie_base_reward_processor:
                             with marked_timer("ernie_base_reward_processor", timing_raw):
@@ -1430,7 +1458,7 @@ class RayPPOTrainer:
                                     max_tokens=self.ernie_max_tokens,
                                     overlength_reward=self.ernie_overlength_reward,
                                 )
-                        
+
                         # Step 2: ErnieXLengthRewardProcessor（根据长度调整 reward）
                         if self.use_ernie_length_reward_processor:
                             with marked_timer("ernie_length_reward_processor", timing_raw):
@@ -1439,7 +1467,7 @@ class RayPPOTrainer:
                                     max_tokens=self.ernie_length_max_tokens,
                                     cache_tokens=self.ernie_cache_tokens,
                                 )
-                        
+
                         # Step 3: ErnieXLengthClipProcessor（根据高质量样本裁剪）
                         if self.use_ernie_length_clip_processor:
                             with marked_timer("ernie_length_clip_processor", timing_raw):
@@ -1448,12 +1476,12 @@ class RayPPOTrainer:
                                     reward_threshold=self.ernie_clip_reward_threshold,
                                     thought_end_id=self.ernie_thought_end_id,
                                 )
-                        
+
                         # Step 4: 移除 rejected 的样本
                         if self.use_ernie_base_reward_processor:
                             with marked_timer("remove_rejected_samples", timing_raw):
                                 batch = remove_rejected_samples(batch)
-                        
+
                         # Step 5: 动态批处理（补齐组数）
                         if self.use_dynamic_batching:
                             with marked_timer("dynamic_batching", timing_raw):
@@ -1462,11 +1490,14 @@ class RayPPOTrainer:
                                     mini_batch_size=self.config.actor_rollout_ref.actor.ppo_mini_batch_size,
                                     rollout=self.config.actor_rollout_ref.rollout.n,
                                 )
-                        
-                        # 重新提取 reward（batch 可能已变化）
-                        if self.use_ernie_base_reward_processor or self.use_ernie_length_reward_processor or self.use_dynamic_batching:
-                            reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 
+                        # 重新提取 reward（batch 可能已变化）
+                        if (
+                            self.use_ernie_base_reward_processor
+                            or self.use_ernie_length_reward_processor
+                            or self.use_dynamic_batching
+                        ):
+                            reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
